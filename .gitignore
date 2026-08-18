@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Virtual environments
+venv/
+.env
+
+# Generated folders
+output/
+processed/
+queue/
+
+# Input PDFs
+input/
+
+# Excel data
+data/
+
+# Generated reports
+*.xlsx
+*.csv
+
+# Logs
+*.log
+processed_pdfs.txt
+fedex_output.txt
