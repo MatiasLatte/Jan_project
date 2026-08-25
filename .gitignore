@@ -28,3 +28,7 @@ data/
 *.log
 processed_pdfs.txt
 fedex_output.txt
+# Google credentials
+credentials.json
+token.json
+service_account.json

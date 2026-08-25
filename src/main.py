@@ -17,18 +17,44 @@ from report_generator import (
     save_mismatch,
     save_po_not_found,
 )
+
+
+# ============================================================
+# SETTINGS
+# ============================================================
+
 QUEUE_FOLDER = "queue"
 PROCESSED_FOLDER = "processed"
 PROCESSED_LOG = "processed_pdfs.txt"
+
+
+# ============================================================
+# PREPARE FOLDERS
+# ============================================================
+
+os.makedirs(QUEUE_FOLDER, exist_ok=True)
+os.makedirs(PROCESSED_FOLDER, exist_ok=True)
+
+
+# ============================================================
+# START
+# ============================================================
 
 print("=" * 60)
 print("Freight Invoice Validator")
 print("=" * 60)
 
+
+# ============================================================
+# INITIALIZE REPORT
+# ============================================================
+
 initialize_report()
-# --------------------------------------------------
-# Load processed PDFs
-# --------------------------------------------------
+
+
+# ============================================================
+# LOAD PROCESSED PDFs
+# ============================================================
 
 processed_files = set()
 
@@ -42,6 +68,45 @@ if os.path.exists(PROCESSED_LOG):
             if line.strip()
         }
 
+
+# ============================================================
+# CREATE A FIXED LIST OF QUEUE FILES
+# ============================================================
+#
+# IMPORTANT:
+# We create the list BEFORE processing.
+#
+# main.py moves processed PDFs from queue/ → processed/.
+# Iterating directly over os.listdir(queue) while changing
+# that directory can cause FileNotFoundError.
+#
+# ============================================================
+
+queue_files = [
+    filename
+    for filename in os.listdir(QUEUE_FOLDER)
+    if filename.lower().endswith(".pdf")
+]
+
+
+if not queue_files:
+
+    print()
+    print("No PDF files found in queue.")
+    print()
+
+    exit()
+
+
+print()
+print(f"Found {len(queue_files)} PDF(s) in queue.")
+print()
+
+
+# ============================================================
+# COUNTERS
+# ============================================================
+
 processed = 0
 matches = 0
 mismatches = 0
@@ -50,111 +115,248 @@ skipped = 0
 
 skipped_files = []
 
-for filename in os.listdir(QUEUE_FOLDER):
 
-    if not filename.lower().endswith(".pdf"):
-        continue
+# ============================================================
+# PROCESS PDFs
+# ============================================================
+
+for filename in queue_files:
+
+    # --------------------------------------------------------
+    # Skip already processed PDFs
+    # --------------------------------------------------------
 
     if filename in processed_files:
 
-        print(f"Skipping already processed PDF : {filename}")
+        print(
+            f"Skipping already processed PDF : {filename}"
+        )
 
         continue
 
-    pdf_file = os.path.join(QUEUE_FOLDER, filename)
+
+    pdf_file = os.path.join(
+        QUEUE_FOLDER,
+        filename
+    )
+
+
+    # --------------------------------------------------------
+    # Make sure the file still exists
+    # --------------------------------------------------------
+
+    if not os.path.exists(pdf_file):
+
+        print(
+            f"Skipping missing PDF : {filename}"
+        )
+
+        skipped += 1
+
+        skipped_files.append(
+            (
+                filename,
+                "PDF no longer exists in queue"
+            )
+        )
+
+        continue
+
 
     print("\n" + "=" * 70)
     print(f"Processing PDF : {filename}")
     print("=" * 70)
 
+
     try:
+
+        # ====================================================
+        # STEP 1 - DETECT INVOICE TYPE
+        # ====================================================
 
         print("Step 1 : Detecting invoice type...")
 
-        invoice_type = detect_invoice_type(pdf_file)
+        invoice_type = detect_invoice_type(
+            pdf_file
+        )
 
-        print(f"Detected Invoice Type : {invoice_type}")
+        print(
+            f"Detected Invoice Type : {invoice_type}"
+        )
+
 
         if invoice_type is None:
 
-            print("❌ Could not determine invoice type")
+            print(
+                "❌ Could not determine invoice type"
+            )
 
             skipped += 1
 
             skipped_files.append(
-        (filename, "Unknown invoice type")
-    )
-            
+                (
+                    filename,
+                    "Unknown invoice type"
+                )
+            )
+
             continue
+
+
+        # ====================================================
+        # STEP 2 - READ PDF
+        # ====================================================
 
         print("Step 2 : Reading PDF...")
 
+
         if invoice_type == "PRIORITY1":
-            pdf_data = priority1_reader(pdf_file)
+
+            pdf_data = priority1_reader(
+                pdf_file
+            )
+
 
         elif invoice_type == "RL":
-            pdf_data = rl_reader(pdf_file)
+
+            pdf_data = rl_reader(
+                pdf_file
+            )
+
 
         elif invoice_type == "FEDEX":
-            pdf_data = fedex_reader(pdf_file)
+
+            pdf_data = fedex_reader(
+                pdf_file
+            )
+
 
         elif invoice_type == "UPS":
-            pdf_data = ups_reader(pdf_file)
+
+            pdf_data = ups_reader(
+                pdf_file
+            )
+
 
         else:
 
-            print("❌ Unsupported invoice")
+            print(
+                "❌ Unsupported invoice"
+            )
 
             skipped += 1
 
             skipped_files.append(
-                (filename, "Unsupported invoice type")
+                (
+                    filename,
+                    "Unsupported invoice type"
+                )
             )
 
             continue
+
 
         processed += 1
 
-        print("\nExtracted PDF Data")
+
+        # ====================================================
+        # DISPLAY EXTRACTED DATA
+        # ====================================================
+
+        print()
+        print("Extracted PDF Data")
 
         for key, value in pdf_data.items():
-            print(f"{key:20}: {value}")
 
-        if pdf_data["po"] is None:
+            print(
+                f"{key:20}: {value}"
+            )
 
-            print("\n❌ PO Number could not be extracted")
+
+        # ====================================================
+        # CHECK PO
+        # ====================================================
+
+        if pdf_data.get("po") is None:
+
+            print()
+            print(
+                "❌ PO Number could not be extracted"
+            )
 
             skipped += 1
 
             skipped_files.append(
-                (filename, "PO Number not extracted")
+                (
+                    filename,
+                    "PO Number not extracted"
+                )
             )
 
             continue
-            print("=" * 60)
-            print("PDF :", filename)
-            print("PO  :", pdf_data["po"])
-            print("Tracking :", pdf_data.get("tracking"))
-            print("=" * 60)
-        
 
-        print("\nStep 3 : Searching Workbook...")
+
+        print()
+        print("=" * 60)
+        print(f"PDF       : {filename}")
+        print(f"PO        : {pdf_data.get('po')}")
+        print(
+            f"Tracking  : {pdf_data.get('tracking')}"
+        )
+        print("=" * 60)
+
+
+        # ====================================================
+        # STEP 3 - SEARCH WORKBOOK
+        # ====================================================
+
+        print()
+        print(
+            "Step 3 : Searching Workbook..."
+        )
+
 
         workbook_data = None
 
-# Try PO first
-        if pdf_data["po"]:
-         workbook_data = find_po(pdf_data["po"])
 
-# If PO fails, try Tracking Number
-        if workbook_data is None and pdf_data.get("tracking"):
-            print("PO not found. Trying Tracking Number...")
-        workbook_data = search_tracking(pdf_data["tracking"])
-        
+        # ----------------------------------------------------
+        # Try PO first
+        # ----------------------------------------------------
+
+        if pdf_data.get("po"):
+
+            workbook_data = find_po(
+                pdf_data["po"]
+            )
+
+
+        # ----------------------------------------------------
+        # If PO not found, try Tracking Number
+        # ----------------------------------------------------
+
+        if (
+            workbook_data is None
+            and pdf_data.get("tracking")
+        ):
+
+            print(
+                "PO not found. Trying Tracking Number..."
+            )
+
+            workbook_data = search_tracking(
+                pdf_data["tracking"]
+            )
+
+
+        # ----------------------------------------------------
+        # Workbook record not found
+        # ----------------------------------------------------
 
         if workbook_data is None:
 
-            print(f"❌ PO {pdf_data['po']} NOT FOUND")
+            print(
+                f"❌ PO {pdf_data.get('po')} NOT FOUND"
+            )
 
             save_po_not_found(
                 pdf_data,
@@ -165,76 +367,218 @@ for filename in os.listdir(QUEUE_FOLDER):
 
             continue
 
-        print("Workbook record found.")
 
-        print(f"Matched By : {workbook_data.get('Matched By', 'PO')}")
+        print(
+            "Workbook record found."
+        )
 
-        print("\nWorkbook Values")
+        print(
+            f"Matched By : "
+            f"{workbook_data.get('Matched By', 'PO')}"
+        )
+
+
+        # ====================================================
+        # DISPLAY WORKBOOK VALUES
+        # ====================================================
+
+        print()
+        print("Workbook Values")
 
         for key, value in workbook_data.items():
-            print(f"{key:20}: {value}")
 
-        # --------------------------------------------------
-        # Recipient Charge Validation (FedEx Only)
-        # --------------------------------------------------
+            print(
+                f"{key:20}: {value}"
+            )
+
+
+        # ====================================================
+        # RECIPIENT CHARGE VALIDATION
+        # FEDEX ONLY
+        # ====================================================
 
         if invoice_type == "FEDEX":
 
-            print("\nRECIPIENT CHARGE VALIDATION")
-            print("-" * 50)
+            print()
+            print(
+                "RECIPIENT CHARGE VALIDATION"
+            )
 
-            pdf_charge = float(pdf_data.get("recipient_charge") or 0)
-            workbook_freight = float(workbook_data.get("Freight") or 0)
+            print(
+                "-" * 50
+            )
 
-            print(f"PDF Recipient Charge : ${pdf_charge}")
-            print(f"Workbook Freight     : ${workbook_freight}")
 
-            charge_difference = abs(pdf_charge - workbook_freight)
+            try:
 
-            print(f"Difference           : ${charge_difference:.2f}")
+                pdf_charge = float(
+                    pdf_data.get(
+                        "recipient_charge"
+                    ) or 0
+                )
+
+            except (TypeError, ValueError):
+
+                pdf_charge = 0
+
+
+            try:
+
+                workbook_freight = float(
+                    workbook_data.get(
+                        "Freight"
+                    ) or 0
+                )
+
+            except (TypeError, ValueError):
+
+                workbook_freight = 0
+
+
+            print(
+                f"PDF Recipient Charge : "
+                f"${pdf_charge}"
+            )
+
+            print(
+                f"Workbook Freight     : "
+                f"${workbook_freight}"
+            )
+
+
+            charge_difference = abs(
+                pdf_charge - workbook_freight
+            )
+
+
+            print(
+                f"Difference           : "
+                f"${charge_difference:.2f}"
+            )
+
 
             if charge_difference < 0.01:
-                print("✅ RECIPIENT CHARGE MATCH")
+
+                print(
+                    "✅ RECIPIENT CHARGE MATCH"
+                )
+
             else:
-                print("❌ RECIPIENT CHARGE MISMATCH")
 
-        print("\nStep 4 : Comparing Prices...")
+                print(
+                    "❌ RECIPIENT CHARGE MISMATCH"
+                )
 
-        result = compare(pdf_data, workbook_data)
 
-        pdf_price = result["pdf_price"]
+        # ====================================================
+        # STEP 4 - COMPARE PRICES
+        # ====================================================
 
-        workbook_price = result["workbook_freight"]
+        print()
+        print(
+            "Step 4 : Comparing Prices..."
+        )
 
-        difference = abs(pdf_price - workbook_price)
 
-        print(f"PDF Price       : {pdf_price}")
+        result = compare(
+            pdf_data,
+            workbook_data
+        )
 
-        print(f"Workbook Price  : {workbook_price}")
 
-        print(f"Difference      : {difference}")
+        pdf_price = result[
+            "pdf_price"
+        ]
+
+        workbook_price = result[
+            "workbook_freight"
+        ]
+
+
+        difference = abs(
+            pdf_price - workbook_price
+        )
+
+
+        print(
+            f"PDF Price       : {pdf_price}"
+        )
+
+        print(
+            f"Workbook Price  : {workbook_price}"
+        )
+
+        print(
+            f"Difference      : {difference}"
+        )
+
+
+        # ====================================================
+        # PRICE MATCH
+        # ====================================================
 
         if difference < 0.01:
 
-            print("✅ PRICE MATCH")
+            print(
+                "✅ PRICE MATCH"
+            )
 
             matches += 1
 
-            destination = os.path.join(PROCESSED_FOLDER, filename)
 
-            shutil.move(pdf_file, destination)
+            destination = os.path.join(
+                PROCESSED_FOLDER,
+                filename
+            )
 
-            with open(PROCESSED_LOG, "a") as f:
 
-                f.write(filename + "\n")
+            # ------------------------------------------------
+            # Make sure destination doesn't already exist
+            # ------------------------------------------------
 
-            print(f"Moved to processed folder : {filename}")
+            if os.path.exists(destination):
+
+                os.remove(destination)
+
+
+            shutil.move(
+                pdf_file,
+                destination
+            )
+
+
+            # ------------------------------------------------
+            # Record as processed
+            # ------------------------------------------------
+
+            with open(
+                PROCESSED_LOG,
+                "a"
+            ) as f:
+
+                f.write(
+                    filename + "\n"
+                )
+
+
+            print(
+                f"Moved to processed folder : "
+                f"{filename}"
+            )
+
+
+        # ====================================================
+        # PRICE MISMATCH
+        # ====================================================
 
         else:
 
-            print("❌ PRICE MISMATCH")
+            print(
+                "❌ PRICE MISMATCH"
+            )
 
             mismatches += 1
+
 
             save_mismatch(
                 pdf_data,
@@ -242,49 +586,108 @@ for filename in os.listdir(QUEUE_FOLDER):
                 filename
             )
 
-            destination = os.path.join(PROCESSED_FOLDER, filename)
 
-            shutil.move(pdf_file, destination)
+            destination = os.path.join(
+                PROCESSED_FOLDER,
+                filename
+            )
 
-            with open(PROCESSED_LOG, "a") as f:
 
-                f.write(filename + "\n")
+            if os.path.exists(destination):
 
-            print(f"Moved to processed folder : {filename}")
+                os.remove(destination)
+
+
+            shutil.move(
+                pdf_file,
+                destination
+            )
+
+
+            # ------------------------------------------------
+            # Record as processed
+            # ------------------------------------------------
+
+            with open(
+                PROCESSED_LOG,
+                "a"
+            ) as f:
+
+                f.write(
+                    filename + "\n"
+                )
+
+
+            print(
+                f"Moved to processed folder : "
+                f"{filename}"
+            )
+
+
+    # ========================================================
+    # ERROR HANDLING
+    # ========================================================
 
     except Exception as e:
 
         skipped += 1
 
-        print("\n❌ ERROR PROCESSING PDF")
+        print()
+        print(
+            "❌ ERROR PROCESSING PDF"
+        )
 
         print(e)
 
         traceback.print_exc()
 
+
         skipped_files.append(
-            (filename, str(e))
+            (
+                filename,
+                str(e)
+            )
         )
 
-print("\n" + "=" * 70)
 
+# ============================================================
+# SUMMARY
+# ============================================================
+
+print()
+print("=" * 70)
 print("SUMMARY")
-
 print("=" * 70)
 
-print(f"Processed      : {processed}")
+print(
+    f"Processed      : {processed}"
+)
 
-print(f"Matches        : {matches}")
+print(
+    f"Matches        : {matches}"
+)
 
-print(f"Mismatches     : {mismatches}")
+print(
+    f"Mismatches     : {mismatches}"
+)
 
-print(f"PO Not Found   : {missing_po}")
+print(
+    f"PO Not Found   : {missing_po}"
+)
 
-print(f"Skipped        : {skipped}")
+print(
+    f"Skipped        : {skipped}"
+)
 
-print("\nSkipped Files")
 
+# ============================================================
+# SKIPPED FILES
+# ============================================================
+
+print()
+print("Skipped Files")
 print("-" * 70)
+
 
 if len(skipped_files) == 0:
 
@@ -294,8 +697,22 @@ else:
 
     for file, reason in skipped_files:
 
-        print(f"{file} --> {reason}")
+        print(
+            f"{file} --> {reason}"
+        )
 
-print("\nCSV Report")
 
-print("output/mismatches.csv")
+# ============================================================
+# CSV REPORT
+# ============================================================
+
+print()
+print("CSV Report")
+print(
+    "output/mismatches.csv"
+)
+
+print()
+print("=" * 70)
+print("PROCESSING COMPLETE")
+print("=" * 70)
