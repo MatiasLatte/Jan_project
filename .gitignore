@@ -32,3 +32,5 @@ fedex_output.txt
 credentials.json
 token.json
 service_account.json
+
+lambda/service_account.json
