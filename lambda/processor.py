@@ -27,7 +27,10 @@ from report_generator import (
 # LAMBDA TEMPORARY WORKSPACE
 # ============================================================
 
-LAMBDA_TMP = "/tmp/jan_project"
+LAMBDA_TMP = os.environ.get(
+    "LAMBDA_TMP",
+    "/tmp/jan_project"
+)
 
 QUEUE_FOLDER = os.path.join(
     LAMBDA_TMP,

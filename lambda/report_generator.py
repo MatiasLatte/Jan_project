@@ -1,7 +1,10 @@
 import csv
 import os
 
-LAMBDA_TMP = "/tmp/jan_project"
+LAMBDA_TMP = os.environ.get(
+    "LAMBDA_TMP",
+    "/tmp/jan_project"
+)
 
 OUTPUT_FOLDER = os.path.join(
     LAMBDA_TMP,

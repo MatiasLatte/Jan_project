@@ -11,7 +11,10 @@ from googleapiclient.http import MediaIoBaseDownload
 # ============================================================
 
 # Lambda temporary workspace
-LAMBDA_TMP = "/tmp/jan_project"
+LAMBDA_TMP = os.environ.get(
+    "LAMBDA_TMP",
+    "/tmp/jan_project"
+)
 
 # Service account credentials
 SERVICE_ACCOUNT_FILE = os.path.join(
@@ -20,8 +23,15 @@ SERVICE_ACCOUNT_FILE = os.path.join(
 )
 
 # Google Drive structure
-DRIVE_PROJECT_NAME = "JAN Project"
-DRIVE_INPUT_FOLDER_NAME = "input"
+DRIVE_PROJECT_NAME = os.environ.get(
+    "GOOGLE_DRIVE_PROJECT_FOLDER",
+    "JAN Project"
+)
+
+DRIVE_INPUT_FOLDER_NAME = os.environ.get(
+    "GOOGLE_DRIVE_INPUT_FOLDER",
+    "input"
+)
 
 # Local Lambda destination
 LOCAL_INPUT_FOLDER = os.path.join(
