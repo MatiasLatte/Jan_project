@@ -10,19 +10,16 @@ from googleapiclient.http import MediaIoBaseDownload
 # SETTINGS
 # ============================================================
 
-# Lambda temporary workspace
 LAMBDA_TMP = os.environ.get(
     "LAMBDA_TMP",
     "/tmp/jan_project"
 )
 
-# Service account credentials
 SERVICE_ACCOUNT_FILE = os.path.join(
     os.path.dirname(__file__),
     "service_account.json"
 )
 
-# Google Drive structure
 DRIVE_PROJECT_NAME = os.environ.get(
     "GOOGLE_DRIVE_PROJECT_FOLDER",
     "JAN Project"
@@ -33,7 +30,6 @@ DRIVE_INPUT_FOLDER_NAME = os.environ.get(
     "input"
 )
 
-# Local Lambda destination
 LOCAL_INPUT_FOLDER = os.path.join(
     LAMBDA_TMP,
     "queue"
@@ -45,19 +41,18 @@ SCOPES = [
 
 
 # ============================================================
-# HELPER - ESCAPE GOOGLE DRIVE QUERY
+# ESCAPE GOOGLE DRIVE QUERY
 # ============================================================
 
 def escape_drive_query(value):
     """
     Safely escape a value used inside a Google Drive query.
     """
-    return value.replace(
-        "\\",
-        "\\\\"
-    ).replace(
-        "'",
-        "\\'"
+
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("'", "\\'")
     )
 
 
@@ -67,8 +62,15 @@ def escape_drive_query(value):
 
 def connect_to_drive():
     """
-    Connect to Google Drive using the Lambda service account.
+    Connect to Google Drive using the service account.
     """
+
+    if not os.path.exists(SERVICE_ACCOUNT_FILE):
+
+        raise FileNotFoundError(
+            "Google Drive service account file was not found: "
+            f"{SERVICE_ACCOUNT_FILE}"
+        )
 
     credentials = (
         service_account.Credentials
@@ -102,6 +104,9 @@ def find_folder(
 ):
     """
     Find a Google Drive folder by name.
+
+    If parent_id is supplied, only search inside that
+    parent folder.
     """
 
     escaped_name = escape_drive_query(
@@ -121,10 +126,21 @@ def find_folder(
             f" and '{parent_id}' in parents"
         )
 
+    print()
+    print(
+        f"Searching Drive folder: {folder_name}"
+    )
+
+    if parent_id:
+
+        print(
+            f"Parent folder ID: {parent_id}"
+        )
+
     results = drive.files().list(
         q=query,
         spaces="drive",
-        fields="files(id,name)"
+        fields="files(id,name,parents)"
     ).execute()
 
     folders = results.get(
@@ -134,13 +150,38 @@ def find_folder(
 
     if not folders:
 
+        print(
+            f"Folder not found: {folder_name}"
+        )
+
         return None
 
-    return folders[0]["id"]
+    if len(folders) > 1:
+
+        print(
+            f"WARNING: Found {len(folders)} "
+            f"folders named '{folder_name}'."
+        )
+
+        print(
+            "Using the first matching folder."
+        )
+
+    folder = folders[0]
+
+    print(
+        f"Found folder: {folder['name']}"
+    )
+
+    print(
+        f"Folder ID: {folder['id']}"
+    )
+
+    return folder["id"]
 
 
 # ============================================================
-# FIND PDF FILES
+# FIND ALL PDF FILES
 # ============================================================
 
 def find_pdfs(
@@ -148,7 +189,10 @@ def find_pdfs(
     folder_id
 ):
     """
-    Find all PDF files inside a Drive folder.
+    Find ALL PDF files directly inside a Drive folder.
+
+    Handles Drive pagination so files are not accidentally
+    limited to the first page.
     """
 
     query = (
@@ -160,21 +204,48 @@ def find_pdfs(
     files = []
 
     page_token = None
+    page_number = 0
 
     while True:
+
+        page_number += 1
+
+        print(
+            f"Reading Google Drive PDF page "
+            f"{page_number}..."
+        )
 
         results = drive.files().list(
             q=query,
             spaces="drive",
-            fields="nextPageToken,files(id,name,size)",
+            pageSize=1000,
+            orderBy="name",
+            fields=(
+                "nextPageToken,"
+                "files("
+                "id,"
+                "name,"
+                "size,"
+                "mimeType,"
+                "parents,"
+                "trashed"
+                ")"
+            ),
             pageToken=page_token
         ).execute()
 
+        page_files = results.get(
+            "files",
+            []
+        )
+
+        print(
+            f"  PDFs returned on page: "
+            f"{len(page_files)}"
+        )
+
         files.extend(
-            results.get(
-                "files",
-                []
-            )
+            page_files
         )
 
         page_token = results.get(
@@ -185,7 +256,105 @@ def find_pdfs(
 
             break
 
-    return files
+    # --------------------------------------------------------
+    # Remove accidental duplicate Drive IDs
+    # --------------------------------------------------------
+
+    unique_files = []
+    seen_ids = set()
+
+    for pdf in files:
+
+        file_id = pdf.get("id")
+
+        if not file_id:
+            continue
+
+        if file_id in seen_ids:
+            continue
+
+        seen_ids.add(
+            file_id
+        )
+
+        unique_files.append(
+            pdf
+        )
+
+    # --------------------------------------------------------
+    # Sort by filename
+    # --------------------------------------------------------
+
+    unique_files.sort(
+        key=lambda item: (
+            str(
+                item.get(
+                    "name",
+                    ""
+                )
+            ).lower()
+        )
+    )
+
+    return unique_files
+
+
+# ============================================================
+# CLEAN LOCAL QUEUE
+# ============================================================
+
+def clean_local_queue():
+    """
+    Remove existing PDFs from the Lambda queue.
+
+    This prevents stale files from previous runs from
+    interfering with the current Drive download.
+    """
+
+    os.makedirs(
+        LOCAL_INPUT_FOLDER,
+        exist_ok=True
+    )
+
+    removed = 0
+
+    for filename in os.listdir(
+        LOCAL_INPUT_FOLDER
+    ):
+
+        path = os.path.join(
+            LOCAL_INPUT_FOLDER,
+            filename
+        )
+
+        if not os.path.isfile(path):
+            continue
+
+        if filename.lower().endswith(
+            ".pdf"
+        ):
+
+            try:
+
+                os.remove(
+                    path
+                )
+
+                removed += 1
+
+            except Exception as error:
+
+                print(
+                    f"WARNING: Could not remove "
+                    f"{filename}: {error}"
+                )
+
+    print(
+        f"Cleaned local PDF queue: "
+        f"{removed} old PDF(s) removed."
+    )
+
+    return removed
 
 
 # ============================================================
@@ -199,8 +368,7 @@ def download_pdf(
     destination
 ):
     """
-    Download one PDF from Google Drive
-    into the Lambda temporary directory.
+    Download one PDF from Google Drive.
     """
 
     request = drive.files().get_media(
@@ -232,13 +400,126 @@ def download_pdf(
                 )
 
                 print(
-                    f"Downloading {file_name}: "
+                    f"Downloading "
+                    f"{file_name}: "
                     f"{progress}%"
                 )
 
-    print(
-        f"Downloaded successfully: {file_name}"
+    # --------------------------------------------------------
+    # Verify downloaded file
+    # --------------------------------------------------------
+
+    if not os.path.exists(
+        destination
+    ):
+
+        raise RuntimeError(
+            f"Download completed but file "
+            f"does not exist: {destination}"
+        )
+
+    file_size = os.path.getsize(
+        destination
     )
+
+    if file_size <= 0:
+
+        raise RuntimeError(
+            f"Downloaded PDF is empty: "
+            f"{file_name}"
+        )
+
+    print(
+        f"Downloaded successfully: "
+        f"{file_name} "
+        f"({file_size} bytes)"
+    )
+
+
+# ============================================================
+# SAFE LOCAL FILENAME
+# ============================================================
+
+def make_unique_local_path(
+    folder,
+    filename
+):
+    """
+    Create a unique local path.
+
+    Normally Drive filenames are unique inside the folder.
+    This protects against duplicate names just in case.
+    """
+
+    base_name = os.path.basename(
+        filename
+    )
+
+    path = os.path.join(
+        folder,
+        base_name
+    )
+
+    if not os.path.exists(path):
+
+        return path
+
+    name, extension = os.path.splitext(
+        base_name
+    )
+
+    counter = 2
+
+    while True:
+
+        candidate = os.path.join(
+            folder,
+            f"{name}_{counter}{extension}"
+        )
+
+        if not os.path.exists(
+            candidate
+        ):
+
+            return candidate
+
+        counter += 1
+
+
+# ============================================================
+# VERIFY LOCAL QUEUE
+# ============================================================
+
+def verify_local_queue():
+    """
+    Count PDFs actually present in the local queue.
+    """
+
+    if not os.path.exists(
+        LOCAL_INPUT_FOLDER
+    ):
+
+        return []
+
+    pdfs = []
+
+    for filename in os.listdir(
+        LOCAL_INPUT_FOLDER
+    ):
+
+        if filename.lower().endswith(
+            ".pdf"
+        ):
+
+            pdfs.append(
+                filename
+            )
+
+    pdfs.sort(
+        key=lambda name: name.lower()
+    )
+
+    return pdfs
 
 
 # ============================================================
@@ -247,7 +528,7 @@ def download_pdf(
 
 def download_drive_input():
     """
-    Download PDFs from:
+    Download ALL PDFs from:
 
         Google Drive
             JAN Project
@@ -256,16 +537,20 @@ def download_drive_input():
     into:
 
         /tmp/jan_project/queue/
+
+    The queue is cleaned before every run.
     """
 
     print()
-    print("=" * 60)
-    print("JAN PROJECT - GOOGLE DRIVE → LAMBDA")
-    print("=" * 60)
+    print("=" * 70)
+    print(
+        "JAN PROJECT - GOOGLE DRIVE -> LAMBDA"
+    )
+    print("=" * 70)
     print()
 
     # --------------------------------------------------------
-    # Prepare Lambda temporary folder
+    # Prepare local queue
     # --------------------------------------------------------
 
     os.makedirs(
@@ -274,9 +559,21 @@ def download_drive_input():
     )
 
     print(
-        f"Lambda input folder:\n"
-        f"{LOCAL_INPUT_FOLDER}"
+        f"Lambda input folder:"
     )
+
+    print(
+        LOCAL_INPUT_FOLDER
+    )
+
+    print()
+
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # Remove stale PDFs from previous Lambda runs.
+    # --------------------------------------------------------
+
+    clean_local_queue()
 
     print()
 
@@ -304,10 +601,7 @@ def download_drive_input():
             "in Google Drive."
         )
 
-    print(
-        f"Found Drive folder: "
-        f"{DRIVE_PROJECT_NAME}"
-    )
+    print()
 
     # --------------------------------------------------------
     # Find input folder
@@ -326,15 +620,21 @@ def download_drive_input():
             "inside JAN Project."
         )
 
+    print()
+
     print(
-        "Found Drive folder: "
-        "JAN Project/input"
+        "Drive path:"
+    )
+
+    print(
+        f"{DRIVE_PROJECT_NAME}/"
+        f"{DRIVE_INPUT_FOLDER_NAME}"
     )
 
     print()
 
     # --------------------------------------------------------
-    # Find PDFs
+    # Find ALL PDFs
     # --------------------------------------------------------
 
     pdf_files = find_pdfs(
@@ -342,65 +642,112 @@ def download_drive_input():
         input_folder_id
     )
 
-    print(
-        f"Found {len(pdf_files)} PDF(s) "
-        "in Google Drive input."
+    drive_total = len(
+        pdf_files
     )
 
-    if not pdf_files:
+    print()
+    print("=" * 70)
+    print(
+        "GOOGLE DRIVE PDF INVENTORY"
+    )
+    print("=" * 70)
 
+    print(
+        f"PDFs found in Drive: "
+        f"{drive_total}"
+    )
+
+    if drive_total == 0:
+
+        print()
         print(
-            "No PDFs to download."
+            "WARNING: Google Drive input folder "
+            "contains zero PDFs."
         )
 
         return {
             "downloaded": 0,
             "skipped": 0,
-            "total": 0
+            "total": 0,
+            "queue_count": 0,
+            "drive_files": [],
         }
 
     print()
 
-    # --------------------------------------------------------
-    # Download PDFs
-    # --------------------------------------------------------
+    for index, pdf in enumerate(
+        pdf_files,
+        start=1
+    ):
+
+        print(
+            f"{index:>3}. "
+            f"{pdf.get('name')}"
+        )
+
+    print()
+
+    # ========================================================
+    # DOWNLOAD ALL FILES
+    # ========================================================
 
     downloaded = 0
     skipped = 0
+    failed = 0
 
-    for pdf in pdf_files:
+    failed_files = []
 
-        file_name = pdf["name"]
+    print("=" * 70)
+    print(
+        "DOWNLOADING PDFs"
+    )
+    print("=" * 70)
 
-        local_path = os.path.join(
+    print()
+
+    for index, pdf in enumerate(
+        pdf_files,
+        start=1
+    ):
+
+        file_id = pdf.get(
+            "id"
+        )
+
+        file_name = pdf.get(
+            "name"
+        )
+
+        if not file_id or not file_name:
+
+            failed += 1
+
+            failed_files.append(
+                (
+                    str(file_name),
+                    "Missing Drive file ID or filename"
+                )
+            )
+
+            continue
+
+        local_path = make_unique_local_path(
             LOCAL_INPUT_FOLDER,
             file_name
         )
 
-        # ----------------------------------------------------
-        # Skip existing files
-        # ----------------------------------------------------
-
-        if os.path.exists(local_path):
-
-            print(
-                f"Already exists in Lambda, "
-                f"skipping: {file_name}"
-            )
-
-            skipped += 1
-
-            continue
-
-        # ----------------------------------------------------
-        # Download
-        # ----------------------------------------------------
+        print()
+        print(
+            f"[{index}/{drive_total}] "
+            f"{file_name}"
+        )
 
         try:
 
             download_pdf(
                 drive,
-                pdf["id"],
+                file_id,
                 file_name,
                 local_path
             )
@@ -409,30 +756,112 @@ def download_drive_input():
 
         except Exception as error:
 
+            failed += 1
+
+            failed_files.append(
+                (
+                    file_name,
+                    str(error)
+                )
+            )
+
             print(
                 f"ERROR downloading "
                 f"{file_name}: {error}"
             )
 
-    # --------------------------------------------------------
-    # Summary
-    # --------------------------------------------------------
+    # ========================================================
+    # VERIFY QUEUE
+    # ========================================================
+
+    local_pdfs = verify_local_queue()
+
+    queue_count = len(
+        local_pdfs
+    )
 
     print()
-    print("=" * 60)
-    print("DOWNLOAD COMPLETE")
-    print("=" * 60)
+    print("=" * 70)
+    print(
+        "LOCAL QUEUE VERIFICATION"
+    )
+    print("=" * 70)
 
     print(
-        f"Downloaded : {downloaded}"
+        f"Drive PDFs found : {drive_total}"
     )
 
     print(
-        f"Skipped    : {skipped}"
+        f"Downloaded       : {downloaded}"
     )
 
     print(
-        f"Total      : {len(pdf_files)}"
+        f"Failed           : {failed}"
+    )
+
+    print(
+        f"PDFs in queue    : {queue_count}"
+    )
+
+    print()
+
+    # --------------------------------------------------------
+    # Detect discrepancy
+    # --------------------------------------------------------
+
+    if queue_count != downloaded:
+
+        print(
+            "WARNING: Number of PDFs in queue "
+            "does not equal successful downloads."
+        )
+
+    # --------------------------------------------------------
+    # Print failed files
+    # --------------------------------------------------------
+
+    if failed_files:
+
+        print()
+        print(
+            "FAILED DOWNLOADS"
+        )
+
+        print(
+            "-" * 70
+        )
+
+        for filename, reason in failed_files:
+
+            print(
+                f"{filename} --> {reason}"
+            )
+
+    # ========================================================
+    # FINAL SUMMARY
+    # ========================================================
+
+    print()
+    print("=" * 70)
+    print(
+        "DOWNLOAD COMPLETE"
+    )
+    print("=" * 70)
+
+    print(
+        f"Drive PDFs found : {drive_total}"
+    )
+
+    print(
+        f"Downloaded       : {downloaded}"
+    )
+
+    print(
+        f"Failed           : {failed}"
+    )
+
+    print(
+        f"Queue PDFs       : {queue_count}"
     )
 
     print()
@@ -440,7 +869,16 @@ def download_drive_input():
     return {
         "downloaded": downloaded,
         "skipped": skipped,
-        "total": len(pdf_files)
+        "total": drive_total,
+        "queue_count": queue_count,
+        "failed": failed,
+        "failed_files": failed_files,
+        "drive_files": [
+            pdf.get(
+                "name"
+            )
+            for pdf in pdf_files
+        ],
     }
 
 
@@ -450,4 +888,15 @@ def download_drive_input():
 
 if __name__ == "__main__":
 
-    download_drive_input()
+    result = download_drive_input()
+
+    print()
+    print("=" * 70)
+    print(
+        "DOWNLOAD TEST RESULT"
+    )
+    print("=" * 70)
+
+    print(
+        result
+    )

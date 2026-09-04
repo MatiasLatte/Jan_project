@@ -4,193 +4,218 @@ import re
 
 def extract_pdf_data(pdf_path):
     """
-    Extract data from R+L Carrier invoices.
+    Reads an R+L Carriers invoice and extracts important fields.
+    Returns a dictionary.
     """
 
-    print("\n" + "=" * 70)
-    print("R+L READER")
-    print("=" * 70)
+    all_text = ""
 
-    text = ""
+    # ============================================================
+    # READ PDF
+    # ============================================================
 
-    with pdfplumber.open(pdf_path) as pdf:
+    try:
 
-        print(f"Pages in PDF : {len(pdf.pages)}")
+        with pdfplumber.open(pdf_path) as pdf:
 
-        for i, page in enumerate(pdf.pages, start=1):
+            for page in pdf.pages:
 
-            print(f"\nReading Page {i}")
+                page_text = page.extract_text()
 
-            page_text = page.extract_text()
+                if page_text:
+                    all_text += page_text + "\n"
 
-            if page_text:
+    except Exception as e:
 
-                print(f"Characters Extracted : {len(page_text)}")
+        print(f"R+L PDF read error: {e}")
 
-                text += page_text + "\n"
-                print(repr(page_text))
+        return {
+            "invoice_number": None,
+            "po": None,
+            "price": None,
+            "carrier": "R+L Carriers",
+            "tracking": None,
+            "bol": None,
+            "customer": None
+        }
 
-            else:
+    # ============================================================
+    # NORMALIZE TEXT
+    # ============================================================
 
-                print("No text extracted from this page.")
+    text = all_text.upper()
 
-    print("\n" + "=" * 70)
-    print("Searching Fields")
-    print("=" * 70)
+    # ============================================================
+    # INVOICE NUMBER
+    #
+    # Examples:
+    # R+L INV 2170292042601
+    # R+L INV AJ18664562601
+    # ============================================================
 
-    # -------------------------------------------------
-    # Invoice Number
-    # -------------------------------------------------
+    invoice = re.search(
+        r"R\+L\s+INV\s*[:#]?\s*([A-Z0-9]+)",
+        text
+    )
 
-    invoice_patterns = [
-
-        # Example: IAJ1866456
-        r"\b(IAJ\d+)\b",
-
-        # Example: Freight Bill No. IAJ1866456
-        r"Freight\s*Bill\s*No\.?\s*(IAJ\d+)",
-
-        # Example: R+L INV AJ18664562601
-        r"R\+L\s*INV\s*(AJ\d+)",
-
-        # Older format
-        r"(I\d{9})",
-
-        # Generic invoice formats
-        r"Invoice\s*Number[:\s]*([A-Z0-9\-]+)",
-
-        r"Invoice[:\s]*([A-Z0-9\-]+)"
-
-    ]
-
-    invoice = None
-
-    for pattern in invoice_patterns:
-
-        print(f"Trying Invoice Pattern : {pattern}")
-
-        match = re.search(pattern, text, re.IGNORECASE)
-
-        if match:
-
-            invoice = match
-
-            print(f"✅ Invoice Found : {match.group(1)}")
-
-            break
-
-    if invoice is None:
-
-        print("❌ Invoice Number NOT FOUND")
-
-    # -------------------------------------------------
-    # Purchase Order
-    # -------------------------------------------------
-
-    po_patterns = [
-
-       r"P\s*O\s*#\s*[:\-]?\s*([A-Z0-9]+)",
-
-        r"Purchase\s*Order[:\s]*([A-Z0-9\-]+)",
-
-        r"Customer\s*PO[:\s]*([A-Z0-9\-]+)",
-
-        r"PO\s*Number[:\s]*([A-Z0-9\-]+)",
-
-        r"Reference[:\s]*([A-Z0-9\-]+)",
-
-        r"Ref\.?#?\s*2[:\s]*([A-Z0-9\-]+)"
-
-    ]
+    # ============================================================
+    # PO NUMBER
+    #
+    # Important:
+    # R+L PDFs can contain:
+    #
+    # P O # 3121061A
+    # PO # 3121061A
+    # PO 3121061A
+    #
+    # We specifically look for the PO label instead of using
+    # a broad pattern that can accidentally capture other text.
+    # ============================================================
 
     po = None
 
-    for pattern in po_patterns:
-
-        print(f"Trying PO Pattern : {pattern}")
-
-        match = re.search(pattern, text, re.IGNORECASE)
-
-        if match:
-
-            po = match
-
-            print(f"✅ PO Found : {match.group(1)}")
-
-            break
-
-    if po is None:
-
-        print("\n❌ PO NOT FOUND")
-
-    # -------------------------------------------------
-    # Tracking Number
-    # -------------------------------------------------
-
-    tracking = re.search(
-
-        r"WEB PRO#\s*([A-Z0-9]+)",
-
-        text,
-
-        re.IGNORECASE
-
+    # First priority: exact "P O #" format
+    po_match = re.search(
+        r"\bP\s+O\s*#\s*([A-Z0-9][A-Z0-9\-]*)\b",
+        text
     )
 
-    if tracking:
+    if po_match:
+        po = po_match.group(1).strip()
 
-        print(f"✅ Tracking : {tracking.group(1)}")
+    # Second: "P O" without #
+    if not po:
 
-    else:
+        po_match = re.search(
+            r"\bP\s+O\s+([A-Z0-9][A-Z0-9\-]*)\b",
+            text
+        )
 
-        print("❌ Tracking NOT FOUND")
+        if po_match:
+            po = po_match.group(1).strip()
 
-    # -------------------------------------------------
-    # Invoice Amount
-    # -------------------------------------------------
+    # Third: normal "PO #"
+    if not po:
 
-    amounts = re.findall(r"\d+\.\d{2}", text)
+        po_match = re.search(
+            r"\bPO\s*#\s*([A-Z0-9][A-Z0-9\-]*)\b",
+            text
+        )
 
-    price = None
+        if po_match:
+            po = po_match.group(1).strip()
 
-    if amounts:
+    # Fourth: normal "PO"
+    if not po:
 
-        price = float(amounts[-1])
+        po_match = re.search(
+            r"\bPO\s+([A-Z0-9][A-Z0-9\-]*)\b",
+            text
+        )
 
-        print(f"✅ Invoice Amount : {price}")
+        if po_match:
+            po = po_match.group(1).strip()
 
-    else:
+    # ============================================================
+    # SHIPPER NUMBER
+    # ============================================================
 
-        print("❌ Invoice Amount NOT FOUND")
+    shipper = re.search(
+        r"SHIPPER#\s*([A-Z0-9\-]+)",
+        text
+    )
 
-    # -------------------------------------------------
-    # Debug Output if PO Missing
-    # -------------------------------------------------
+    # ============================================================
+    # WEB PRO / TRACKING
+    #
+    # Examples:
+    # WEB PRO# WB9978426
+    # WEB PRO# WC04108844
+    # ============================================================
 
-    if po is None:
+    tracking = re.search(
+        r"WEB\s+PRO#\s*([A-Z0-9\-]+)",
+        text
+    )
 
-        print("\n" + "=" * 70)
-        print("FIRST 2500 CHARACTERS OF EXTRACTED TEXT")
-        print("=" * 70)
+    # ============================================================
+    # BOL
+    #
+    # Example:
+    # R11 BOL POD
+    # ============================================================
 
-        print(text[:2500])
+    bol = re.search(
+        r"\bBOL\s+([A-Z0-9\-]+)",
+        text
+    )
 
-    # -------------------------------------------------
-    # Return Data
-    # -------------------------------------------------
+    # ============================================================
+    # PRICE
+    #
+    # R+L invoice header:
+    #
+    # NAS215 07/08/26 I217029204 $231.72
+    #
+    # The amount immediately following the invoice number is
+    # the invoice total in these samples.
+    # ============================================================
+
+    price = re.search(
+        r"NAS\d+\s+\d{2}/\d{2}/\d{2}\s+"
+        r"[A-Z0-9]+\s+\$?\s*([\d,]+\.\d{2})",
+        text
+    )
+
+    # Fallback: first dollar amount
+    if not price:
+
+        price = re.search(
+            r"\$\s*([\d,]+\.\d{2})",
+            text
+        )
+
+    # ============================================================
+    # CUSTOMER
+    # ============================================================
+
+    customer = None
+
+    # ============================================================
+    # RETURN DATA
+    # ============================================================
 
     return {
 
-        "invoice_number": invoice.group(1) if invoice else None,
+        "invoice_number": (
+            invoice.group(1).strip()
+            if invoice
+            else None
+        ),
 
-        "po": po.group(1) if po else None,
+        "po": po,
 
-        "price": price,
+        "price": (
+            float(
+                price.group(1).replace(",", "")
+            )
+            if price
+            else None
+        ),
 
         "carrier": "R+L Carriers",
 
-        "tracking": tracking.group(1) if tracking else None,
+        "tracking": (
+            tracking.group(1).strip()
+            if tracking
+            else None
+        ),
 
-        "bol": None
+        "bol": (
+            bol.group(1).strip()
+            if bol
+            else None
+        ),
 
+        "customer": customer
     }
